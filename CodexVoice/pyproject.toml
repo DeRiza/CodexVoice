@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codexvoice"
+version = "0.3.0"
+description = "Local macOS voice input MVP foundation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+  "opencc-python-reimplemented>=0.1.7",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+audio = [
+  "sounddevice>=0.4.6",
+  "webrtcvad-wheels>=2.0.14",
+]
+transcribe = [
+  "faster-whisper>=1.0",
+  "numpy>=1.26",
+]
+ui = [
+  "pyobjc-framework-Cocoa>=10.0; platform_system == 'Darwin'",
+  "pyobjc-framework-Quartz>=10.0; platform_system == 'Darwin'",
+  "pyobjc-framework-AVFoundation>=10.0; platform_system == 'Darwin'",
+]
+test = [
+  "pytest>=8.0",
+]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+codexvoice = "codexvoice.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codexvoice"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

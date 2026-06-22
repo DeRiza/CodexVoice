@@ -1,0 +1,2 @@
+"""Minimal macOS UI adapters."""
+

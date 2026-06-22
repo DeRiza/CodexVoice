@@ -1,0 +1,21 @@
+hotkey: "cmd+shift+space"
+recording:
+  sample_rate: 16000
+  channels: 1
+  frame_ms: 20
+  pre_speech_timeout_sec: 8.0
+  post_speech_silence_sec: 1.2
+  max_duration_sec: 60.0
+transcription:
+  engine: "auto"
+  language: "zh"
+  model: "small"
+injection:
+  method: "clipboard"
+  restore_clipboard: true
+  paste_delay_ms: 80
+ui:
+  show_overlay: true
+logging:
+  level: "INFO"
+
