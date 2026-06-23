@@ -29,13 +29,11 @@ _WAVE_COLORS = (
 _WAVE_COUNT = len(_WAVE_COLORS)
 _WAVE_SAMPLES = 84
 _WAVE_ACTIVE_WIDTH = 228.0
-_WAVE_BASE_AMPLITUDE = 5.5
-_WAVE_MAX_AMPLITUDE = 31.0
-_WAVE_LINE_WIDTHS = (2.7, 2.2, 1.8, 1.55, 1.3)
-_WAVE_ALPHAS = (0.92, 0.68, 0.58, 0.52, 0.46)
-_WAVE_GLOW_LINE_WIDTHS = (15.0, 13.5, 12.0, 11.0, 10.0)
-_WAVE_GLOW_ALPHAS = (0.22, 0.18, 0.16, 0.15, 0.14)
-_WAVE_FILL_ALPHAS = (0.20, 0.16, 0.15, 0.14, 0.12)
+_WAVE_BASE_AMPLITUDE = 26.0
+_WAVE_LINE_WIDTHS = (0.95, 0.86, 0.78, 0.72, 0.68)
+_WAVE_ALPHAS = (0.62, 0.50, 0.46, 0.42, 0.38)
+_WAVE_CENTERLINE_WIDTH = 0.62
+_WAVE_CENTERLINE_ALPHA = 0.24
 _WAVE_AMPLITUDE_MULTIPLIERS = (1.00, 0.86, 0.95, 0.80, 0.90)
 _WAVE_FREQUENCIES = (1.25, 1.68, 2.05, 1.52, 2.32)
 _WAVE_SECONDARY_FREQUENCIES = (2.45, 2.95, 3.35, 2.70, 3.85)
@@ -44,6 +42,10 @@ _WAVE_PHASE_OFFSETS = (0.0, 1.7, 3.2, 4.8, 6.4)
 _WAVE_Y_OFFSETS = (0.0, -3.2, 2.6, -1.8, 3.4)
 _WAVE_SECONDARY_MIX = (0.20, 0.28, 0.24, 0.30, 0.22)
 _WAVE_SHADOW_COLORS = tuple((0.0, 0.0, 0.0, 1.0) for _ in range(_WAVE_COUNT))
+_WAVE_REPLICATOR_INSTANCE_COUNT = 99
+_WAVE_TOTAL_VISIBLE_LINES_PER_COLOR = _WAVE_REPLICATOR_INSTANCE_COUNT + 1
+_REPLICATOR_FINAL_SCALE = 0.01
+_WAVE_REPLICATOR_ALPHA_OFFSET = -0.0045
 _DOT_COUNT = 5
 _DOT_SIZE = 9.0
 _DOT_GAP = 13.0
@@ -60,6 +62,7 @@ _VISUAL_LEVEL_SPEECH_CEILING = 0.060
 _VISUAL_LEVEL_CURVE = 0.55
 _VISUAL_LEVEL_ATTACK = 0.64
 _VISUAL_LEVEL_RELEASE = 0.24
+_VOICE_BOOST_MAX = 0.30
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,13 @@ class _PanelFrame:
     y: float
     width: float = _PANEL_WIDTH
     height: float = _PANEL_HEIGHT
+
+
+@dataclass(frozen=True)
+class _WaveRenderFrame:
+    phase: float
+    amplitude_multiplier: float
+    voice_intensity: float
 
 
 def _panel_frame_for_visible_frame(
@@ -90,8 +100,17 @@ def _visual_level_from_audio_level(level: float) -> float:
     return _clamp(normalized, 0.0, 1.0) ** _VISUAL_LEVEL_CURVE
 
 
+def _replicator_amplitude_decay(
+    instance_count: int = _WAVE_REPLICATOR_INSTANCE_COUNT,
+    final_scale: float = _REPLICATOR_FINAL_SCALE,
+) -> float:
+    if instance_count <= 1:
+        return 1.0
+    return final_scale ** (1.0 / (instance_count - 1))
+
+
 def _waveform_points(
-    level: float,
+    amplitude_multiplier: float,
     phase: float,
     wave_index: int,
     collapse: float = 0.0,
@@ -99,13 +118,13 @@ def _waveform_points(
     y_offset: float = 0.0,
 ) -> list[tuple[float, float]]:
     profile_index = wave_index % _WAVE_COUNT
-    clamped_level = _clamp(level, 0.0, 1.0)
+    clamped_multiplier = _clamp(amplitude_multiplier, 1.0, 1.0 + _VOICE_BOOST_MAX)
     collapse = _clamp(collapse, 0.0, 1.0)
     center_y = _PANEL_HEIGHT / 2.0
     start_x = (_PANEL_WIDTH - _WAVE_ACTIVE_WIDTH) / 2.0
-    shaped_level = clamped_level**0.62
     amplitude = (
-        (_WAVE_BASE_AMPLITUDE + _WAVE_MAX_AMPLITUDE * shaped_level)
+        _WAVE_BASE_AMPLITUDE
+        * clamped_multiplier
         * _WAVE_AMPLITUDE_MULTIPLIERS[profile_index]
         * (1.0 - collapse)
     )
@@ -129,20 +148,36 @@ def _waveform_points(
     return points
 
 
-def _waveform_ribbon_points(
-    level: float,
-    phase: float,
-    wave_index: int,
-    collapse: float = 0.0,
+def _waveform_centerline_points(
     x_offset: float = 0.0,
     y_offset: float = 0.0,
 ) -> list[tuple[float, float]]:
-    wave = _waveform_points(level, phase, wave_index, collapse, x_offset, y_offset)
     center_y = (_PANEL_HEIGHT / 2.0) + y_offset
-    profile_index = wave_index % _WAVE_COUNT
-    inner_scale = 0.18 + (profile_index * 0.035)
-    inner_edge = [(x, center_y + ((y - center_y) * inner_scale)) for x, y in reversed(wave)]
-    return [*wave, *inner_edge, wave[0]]
+    start_x = (_PANEL_WIDTH - _WAVE_ACTIVE_WIDTH) / 2.0
+    end_x = start_x + _WAVE_ACTIVE_WIDTH
+    return [(start_x + x_offset, center_y), (end_x + x_offset, center_y)]
+
+
+class _WaveMotionModel:
+    def __init__(self) -> None:
+        self._audio_level = 0.0
+        self._voice_intensity = 0.0
+        self._phase = 0.0
+
+    def set_audio_level(self, level: float) -> None:
+        self._audio_level = _clamp(level, 0.0, 1.0)
+
+    def next_frame(self, dt: float) -> _WaveRenderFrame:
+        self._phase += max(0.0, dt)
+        target_intensity = _visual_level_from_audio_level(self._audio_level)
+        response = _VISUAL_LEVEL_ATTACK if target_intensity > self._voice_intensity else _VISUAL_LEVEL_RELEASE
+        self._voice_intensity = (self._voice_intensity * (1.0 - response)) + (target_intensity * response)
+        amplitude_multiplier = 1.0 + (_VOICE_BOOST_MAX * self._voice_intensity)
+        return _WaveRenderFrame(
+            phase=self._phase,
+            amplitude_multiplier=amplitude_multiplier,
+            voice_intensity=self._voice_intensity,
+        )
 
 
 def _processing_dot_alphas(phase: float, count: int = _DOT_COUNT) -> list[float]:
@@ -156,19 +191,19 @@ class OverlayController:
         self.visible = False
         self.current_state = SessionState.IDLE
         self.level = 0.0
-        self._smoothed_level = 0.0
+        self._motion = _WaveMotionModel()
         self._lock = threading.RLock()
         self._native_failed = False
         self._window = None
         self._container = None
-        self._wave_shadow_layers: list[object] = []
-        self._wave_fill_layers: list[object] = []
-        self._wave_glow_layers: list[object] = []
-        self._wave_layers: list[object] = []
+        self._wave_shadow_replicators: list[object] = []
+        self._wave_shadow_source_layers: list[object] = []
+        self._wave_replicators: list[object] = []
+        self._wave_source_layers: list[object] = []
+        self._wave_centerline_layers: list[object] = []
         self._dot_shadow_views: list[object] = []
         self._dot_views: list[object] = []
         self._animation_running = False
-        self._phase = 0.0
         self._processing_transition = 1.0
         self._sound_cache: dict[str, object] = {}
 
@@ -257,7 +292,7 @@ class OverlayController:
                 NSWindowCollectionBehaviorTransient,
                 NSWindowStyleMaskBorderless,
             )
-            from Quartz import CAShapeLayer, kCALineCapRound  # type: ignore
+            from Quartz import CAReplicatorLayer, CAShapeLayer, CATransform3DMakeScale, kCALineCapRound  # type: ignore
         except Exception:
             self._native_failed = True
             logger.debug("PyObjC AppKit/Quartz unavailable; overlay disabled", exc_info=True)
@@ -308,54 +343,77 @@ class OverlayController:
         panel.setContentView_(container)
         self._window = panel
         self._container = container
-        self._wave_shadow_layers = self._make_wave_layers(CAShapeLayer, kCALineCapRound, colors=_WAVE_SHADOW_COLORS, line_width_extra=0.6)
-        self._wave_fill_layers = self._make_wave_fill_layers(CAShapeLayer, colors=_WAVE_COLORS)
-        self._wave_glow_layers = self._make_wave_layers(
+        self._wave_shadow_replicators, self._wave_shadow_source_layers = self._make_wave_replicators(
+            CAReplicatorLayer,
             CAShapeLayer,
+            CATransform3DMakeScale,
+            kCALineCapRound,
+            colors=_WAVE_SHADOW_COLORS,
+            line_width_extra=0.25,
+        )
+        self._wave_replicators, self._wave_source_layers = self._make_wave_replicators(
+            CAReplicatorLayer,
+            CAShapeLayer,
+            CATransform3DMakeScale,
             kCALineCapRound,
             colors=_WAVE_COLORS,
             line_width_extra=0.0,
-            line_widths=_WAVE_GLOW_LINE_WIDTHS,
         )
-        self._wave_layers = self._make_wave_layers(CAShapeLayer, kCALineCapRound, colors=_WAVE_COLORS, line_width_extra=0.0)
+        self._wave_centerline_layers = self._make_wave_centerline_layers(CAShapeLayer, kCALineCapRound, colors=_WAVE_COLORS)
         self._dot_shadow_views = self._make_dot_views(NSView, NSMakeRect, color=(0.0, 0.0, 0.0, _SHADOW_ALPHA))
         self._dot_views = self._make_dot_views(NSView, NSMakeRect, color=(0.78, 0.72, 1.0, 0.95))
         return True
 
-    def _make_wave_layers(
+    def _make_wave_replicators(
         self,
+        CAReplicatorLayer,
         CAShapeLayer,
+        CATransform3DMakeScale,
         line_cap,
         colors: tuple[tuple[float, float, float, float], ...],
         line_width_extra: float,
         line_widths: tuple[float, ...] = _WAVE_LINE_WIDTHS,
-    ) -> list[object]:  # noqa: ANN001, N803
+    ) -> tuple[list[object], list[object]]:  # noqa: ANN001, N803
+        assert self._container is not None
+        container_layer = self._container.layer()
+        replicators = []
+        source_layers = []
+        decay = _replicator_amplitude_decay()
+        for index in range(_WAVE_COUNT):
+            replicator = CAReplicatorLayer.layer()
+            replicator.setFrame_(self._container.bounds())
+            replicator.setInstanceCount_(_WAVE_REPLICATOR_INSTANCE_COUNT)
+            replicator.setInstanceTransform_(CATransform3DMakeScale(1.0, decay, 1.0))
+            set_alpha_offset = getattr(replicator, "setInstanceAlphaOffset_", None)
+            if callable(set_alpha_offset):
+                set_alpha_offset(_WAVE_REPLICATOR_ALPHA_OFFSET)
+            replicator.setHidden_(True)
+
+            source = CAShapeLayer.layer()
+            source.setFrame_(self._container.bounds())
+            source.setFillColor_(_cg_color(0.0, 0.0, 0.0, 0.0))
+            source.setStrokeColor_(_cg_color(*colors[index]))
+            source.setLineWidth_(line_widths[index] + line_width_extra)
+            source.setLineCap_(line_cap)
+            source.setHidden_(False)
+
+            replicator.addSublayer_(source)
+            container_layer.addSublayer_(replicator)
+            replicators.append(replicator)
+            source_layers.append(source)
+        return replicators, source_layers
+
+    def _make_wave_centerline_layers(self, CAShapeLayer, line_cap, colors: tuple[tuple[float, float, float, float], ...]) -> list[object]:  # noqa: ANN001, N803
         assert self._container is not None
         container_layer = self._container.layer()
         layers = []
         for index in range(_WAVE_COUNT):
             layer = CAShapeLayer.layer()
+            layer.setFrame_(self._container.bounds())
             layer.setFillColor_(_cg_color(0.0, 0.0, 0.0, 0.0))
             layer.setStrokeColor_(_cg_color(*colors[index]))
-            layer.setLineWidth_(line_widths[index] + line_width_extra)
+            layer.setLineWidth_(_WAVE_CENTERLINE_WIDTH)
             layer.setLineCap_(line_cap)
-            layer.setHidden_(True)
-            container_layer.addSublayer_(layer)
-            layers.append(layer)
-        return layers
-
-    def _make_wave_fill_layers(
-        self,
-        CAShapeLayer,
-        colors: tuple[tuple[float, float, float, float], ...],
-    ) -> list[object]:  # noqa: ANN001, N803
-        assert self._container is not None
-        container_layer = self._container.layer()
-        layers = []
-        for index in range(_WAVE_COUNT):
-            layer = CAShapeLayer.layer()
-            layer.setFillColor_(_cg_color(*colors[index]))
-            layer.setStrokeColor_(_cg_color(0.0, 0.0, 0.0, 0.0))
             layer.setHidden_(True)
             container_layer.addSublayer_(layer)
             layers.append(layer)
@@ -408,19 +466,17 @@ class OverlayController:
         if not visible or state is SessionState.IDLE:
             self._animation_running = False
             return
-        self._phase += _ANIMATION_INTERVAL_SEC
-        target_level = _visual_level_from_audio_level(level)
-        response = _VISUAL_LEVEL_ATTACK if target_level > self._smoothed_level else _VISUAL_LEVEL_RELEASE
-        self._smoothed_level = (self._smoothed_level * (1.0 - response)) + (target_level * response)
-        self._render_state(state, transition)
+        self._motion.set_audio_level(level)
+        frame = self._motion.next_frame(_ANIMATION_INTERVAL_SEC)
+        self._render_state(state, transition, frame)
         self._schedule_tick()
 
-    def _render_state(self, state: SessionState, transition: float) -> None:
+    def _render_state(self, state: SessionState, transition: float, frame: _WaveRenderFrame) -> None:
         if state is SessionState.RECORDING:
-            self._render_waveform(collapse=0.0, alpha_scale=1.0)
+            self._render_waveform(frame, collapse=0.0, alpha_scale=1.0)
             return
         if state is SessionState.PROCESSING:
-            self._render_processing(transition)
+            self._render_processing(transition, frame)
             return
         if state is SessionState.INJECTING:
             self._render_static_dots((0.32, 0.95, 0.70, 0.95), alpha=0.88)
@@ -428,34 +484,34 @@ class OverlayController:
         if state is SessionState.ERROR:
             self._render_static_dots((1.0, 0.28, 0.34, 0.95), alpha=0.95)
 
-    def _render_waveform(self, collapse: float, alpha_scale: float) -> None:
-        for index, layer in enumerate(self._wave_shadow_layers):
+    def _render_waveform(self, frame: _WaveRenderFrame, collapse: float, alpha_scale: float) -> None:
+        for index, replicator in enumerate(self._wave_shadow_replicators):
+            replicator.setHidden_(False)
+            replicator.setOpacity_(_WAVE_ALPHAS[index] * _SHADOW_ALPHA * alpha_scale)
+            self._wave_shadow_source_layers[index].setPath_(
+                _cg_path_from_points(
+                    _waveform_points(frame.amplitude_multiplier, frame.phase, index, collapse, _SHADOW_OFFSET_X, _SHADOW_OFFSET_Y)
+                )
+            )
+        for index, replicator in enumerate(self._wave_replicators):
+            replicator.setHidden_(False)
+            replicator.setOpacity_(_WAVE_ALPHAS[index] * alpha_scale)
+            self._wave_source_layers[index].setPath_(_cg_path_from_points(_waveform_points(frame.amplitude_multiplier, frame.phase, index, collapse)))
+        for index, layer in enumerate(self._wave_centerline_layers):
             layer.setHidden_(False)
-            layer.setOpacity_(_WAVE_ALPHAS[index] * _SHADOW_ALPHA * alpha_scale)
-            layer.setPath_(_cg_path_from_points(_waveform_points(self._smoothed_level, self._phase, index, collapse, _SHADOW_OFFSET_X, _SHADOW_OFFSET_Y)))
-        for index, layer in enumerate(self._wave_fill_layers):
-            layer.setHidden_(False)
-            layer.setOpacity_(_WAVE_FILL_ALPHAS[index] * alpha_scale)
-            layer.setPath_(_cg_path_from_points(_waveform_ribbon_points(self._smoothed_level, self._phase, index, collapse)))
-        for index, layer in enumerate(self._wave_glow_layers):
-            layer.setHidden_(False)
-            layer.setOpacity_(_WAVE_GLOW_ALPHAS[index] * alpha_scale)
-            layer.setPath_(_cg_path_from_points(_waveform_points(self._smoothed_level, self._phase, index, collapse)))
-        for index, layer in enumerate(self._wave_layers):
-            layer.setHidden_(False)
-            layer.setOpacity_(_WAVE_ALPHAS[index] * alpha_scale)
-            layer.setPath_(_cg_path_from_points(_waveform_points(self._smoothed_level, self._phase, index, collapse)))
+            layer.setOpacity_(_WAVE_CENTERLINE_ALPHA * alpha_scale)
+            layer.setPath_(_cg_path_from_points(_waveform_centerline_points()))
         self._hide_dots()
 
-    def _render_processing(self, transition: float) -> None:
+    def _render_processing(self, transition: float, frame: _WaveRenderFrame) -> None:
         if transition < 1.0:
-            self._render_waveform(collapse=transition, alpha_scale=1.0 - transition)
-            alphas = [value * transition for value in _processing_dot_alphas(self._phase)]
+            self._render_waveform(frame, collapse=transition, alpha_scale=1.0 - transition)
+            alphas = [value * transition for value in _processing_dot_alphas(frame.phase)]
             self._render_dot_group(self._dot_shadow_views, alphas, alpha_scale=_SHADOW_ALPHA, x_offset=_SHADOW_OFFSET_X, y_offset=_SHADOW_OFFSET_Y)
             self._render_dot_group(self._dot_views, alphas, alpha_scale=1.0, x_offset=0.0, y_offset=0.0)
             return
         self._hide_wave_layers()
-        alphas = _processing_dot_alphas(self._phase)
+        alphas = _processing_dot_alphas(frame.phase)
         self._render_dot_group(self._dot_shadow_views, alphas, alpha_scale=_SHADOW_ALPHA, x_offset=_SHADOW_OFFSET_X, y_offset=_SHADOW_OFFSET_Y)
         self._render_dot_group(self._dot_views, alphas, alpha_scale=1.0, x_offset=0.0, y_offset=0.0)
 
@@ -481,7 +537,7 @@ class OverlayController:
                 layer.setBackgroundColor_(_cg_color(*color))
 
     def _hide_wave_layers(self) -> None:
-        for layer in [*self._wave_shadow_layers, *self._wave_fill_layers, *self._wave_glow_layers, *self._wave_layers]:
+        for layer in [*self._wave_shadow_replicators, *self._wave_replicators, *self._wave_centerline_layers]:
             layer.setHidden_(True)
 
     def _hide_dots(self) -> None:

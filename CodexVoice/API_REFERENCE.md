@@ -278,4 +278,4 @@
 - `tests/test_runtime_lock.py`
 - `tests/test_vad_rules.py`
 
-当前验证：`64 passed`。
+当前验证：`68 passed`。

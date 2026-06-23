@@ -1,7 +1,7 @@
 # Overlay UI Implementation Brief
 
 > 日期：2026-06-22  
-> 状态：实现前约束，供 CodexVoice macOS 浮窗开发和验收使用
+> 状态：当前 overlay 实现约束，供 CodexVoice macOS 浮窗开发和验收使用
 
 ## 目标
 
@@ -14,6 +14,10 @@
 - 不引入 PyQt、WebView 或 SwiftUI。
 - 不改变录音、转写、注入链路。
 - 不让动画改变窗口尺寸。
+
+## 声波动效实现
+
+当前声波实现见 [Waveform Motion Design](waveform-motion-design.md)：overlay 内部 `WaveMotionModel` 负责把 RMS 映射为视觉运动，渲染层使用 `CAReplicatorLayer` + centerline 的 5 色 × 100 细线方案。新的 ribbon fill + sparse mesh 思路暂存于临时文档 `waveform-ribbon-sparse-mesh-temp.md`，尚未实现。
 
 ## 位置和尺寸
 
@@ -46,10 +50,10 @@
 ### `RECORDING`
 
 - 浮窗显示。
-- 中间显示 5 条错位彩色 Siri-style 横向 sine wave。
-- 每条 wave 下方叠加半透明填充 ribbon，并在细线下方叠加同色宽 glow stroke，形成接近参考图的光带感。
+- 中间显示 5 色错位彩色 Siri-style 横向 sine wave。
+- 每种颜色使用 1 个 `CAReplicatorLayer` 渲染 99 根指数递减细线，并叠加 1 条 centerline，形成每色 100 根可见线。
 - 声波后方显示一层约 `10%` 透明度、轻微偏移的 shadow wave，shadow 跟随声波动画同步变化。
-- wave 振幅不直接使用原始 RMS，而是先把常见说话音量区间映射成视觉音量。
+- wave 振幅不直接使用原始 RMS，而是由 `WaveMotionModel` 映射为 `voice_intensity`：无声时保持基础呼吸幅度 `1.0`，最大声音时增强到 `1.3`。
 - 动画 tick 使用 60fps；音量上升时快速响应，音量下降时慢速回落，避免抖动但增强实时感。
 - `set_level()` 可能来自音频回调线程，因此不得直接操作 AppKit。
 

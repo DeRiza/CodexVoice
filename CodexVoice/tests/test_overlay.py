@@ -5,13 +5,18 @@ from codexvoice.types import SessionState
 from codexvoice.ui.overlay import (
     _ANIMATION_INTERVAL_SEC,
     _PANEL_HEIGHT,
+    _REPLICATOR_FINAL_SCALE,
     _WAVE_COLORS,
     _WAVE_COUNT,
+    _WAVE_REPLICATOR_INSTANCE_COUNT,
     _WAVE_SAMPLES,
+    _WAVE_TOTAL_VISIBLE_LINES_PER_COLOR,
+    _WaveMotionModel,
     _panel_frame_for_visible_frame,
     _processing_dot_alphas,
+    _replicator_amplitude_decay,
     _visual_level_from_audio_level,
-    _waveform_ribbon_points,
+    _waveform_centerline_points,
     _waveform_points,
     OverlayController,
 )
@@ -27,7 +32,7 @@ def test_panel_frame_stays_below_visible_frame_top() -> None:
 
 
 def test_waveform_points_stay_inside_panel_height() -> None:
-    points = _waveform_points(level=1.0, phase=0.0, wave_index=0)
+    points = _waveform_points(amplitude_multiplier=1.3, phase=0.0, wave_index=0)
     ys = [point[1] for point in points]
 
     assert len(points) == _WAVE_SAMPLES
@@ -45,7 +50,7 @@ def test_waveform_waves_have_stronger_distinct_motion() -> None:
     ranges = []
     midpoints = []
     for index in range(_WAVE_COUNT):
-        points = _waveform_points(level=1.0, phase=0.7, wave_index=index)
+        points = _waveform_points(amplitude_multiplier=1.3, phase=0.7, wave_index=index)
         ys = [point[1] for point in points]
         ranges.append(max(ys) - min(ys))
         midpoints.append(round(ys[_WAVE_SAMPLES // 2], 1))
@@ -53,7 +58,7 @@ def test_waveform_waves_have_stronger_distinct_motion() -> None:
         assert min(ys) >= 0
         assert max(ys) <= _PANEL_HEIGHT
 
-    assert max(ranges) >= 44.0
+    assert max(ranges) >= 42.0
     assert len(set(midpoints)) >= 4
 
 
@@ -68,21 +73,63 @@ def test_animation_runs_at_sixty_fps() -> None:
     assert _ANIMATION_INTERVAL_SEC == 1.0 / 60.0
 
 
-def test_waveform_ribbon_points_close_to_centerline() -> None:
-    points = _waveform_ribbon_points(level=0.8, phase=0.4, wave_index=0)
+def test_waveform_has_base_motion_and_voice_boost() -> None:
+    base_points = _waveform_points(amplitude_multiplier=1.0, phase=0.4, wave_index=0)
+    boosted_points = _waveform_points(amplitude_multiplier=1.3, phase=0.4, wave_index=0)
+    base_range = max(y for _, y in base_points) - min(y for _, y in base_points)
+    boosted_range = max(y for _, y in boosted_points) - min(y for _, y in boosted_points)
 
-    assert len(points) == (_WAVE_SAMPLES * 2) + 1
-    assert points[0] == points[-1]
-    ys = [point[1] for point in points]
-    assert min(ys) >= 0
-    assert max(ys) <= _PANEL_HEIGHT
+    assert base_range > 20.0
+    assert boosted_range > base_range * 1.2
 
 
 def test_waveform_collapse_flattens_to_centerline() -> None:
-    points = _waveform_points(level=1.0, phase=1.5, wave_index=_WAVE_COUNT - 1, collapse=1.0)
+    points = _waveform_points(amplitude_multiplier=1.3, phase=1.5, wave_index=_WAVE_COUNT - 1, collapse=1.0)
     center_y = _PANEL_HEIGHT / 2.0
 
     assert all(abs(y - center_y) < 0.001 for _, y in points)
+
+
+def test_replicator_line_plan_uses_ninety_nine_instances_plus_centerline() -> None:
+    assert _WAVE_REPLICATOR_INSTANCE_COUNT == 99
+    assert _WAVE_TOTAL_VISIBLE_LINES_PER_COLOR == 100
+    assert round(_replicator_amplitude_decay(_WAVE_REPLICATOR_INSTANCE_COUNT) ** (_WAVE_REPLICATOR_INSTANCE_COUNT - 1), 4) == _REPLICATOR_FINAL_SCALE
+
+
+def test_waveform_centerline_is_flat_at_panel_center() -> None:
+    points = _waveform_centerline_points()
+    center_y = _PANEL_HEIGHT / 2.0
+
+    assert len(points) == 2
+    assert all(y == center_y for _, y in points)
+
+
+def test_wave_motion_model_keeps_base_motion_without_sound() -> None:
+    model = _WaveMotionModel()
+
+    frame = model.next_frame(_ANIMATION_INTERVAL_SEC)
+
+    assert frame.phase == _ANIMATION_INTERVAL_SEC
+    assert frame.voice_intensity == 0.0
+    assert frame.amplitude_multiplier == 1.0
+
+
+def test_wave_motion_model_boosts_and_releases_amplitude() -> None:
+    model = _WaveMotionModel()
+
+    model.set_audio_level(0.06)
+    boosted = model.next_frame(_ANIMATION_INTERVAL_SEC)
+    for _ in range(8):
+        boosted = model.next_frame(_ANIMATION_INTERVAL_SEC)
+
+    assert 1.25 <= boosted.amplitude_multiplier <= 1.3
+    assert 0.8 <= boosted.voice_intensity <= 1.0
+
+    model.set_audio_level(0.0)
+    released = model.next_frame(_ANIMATION_INTERVAL_SEC)
+
+    assert 1.0 < released.amplitude_multiplier < boosted.amplitude_multiplier
+    assert 0.0 < released.voice_intensity < boosted.voice_intensity
 
 
 def test_processing_dot_alphas_has_one_active_dot() -> None:

@@ -11,7 +11,7 @@
 - 语音 session 状态机。
 - 剪贴板注入器。
 - faster-whisper 内存 PCM 转录适配层。
-- macOS 热键、权限、菜单栏 UI，以及顶部居中的原生声波浮窗。
+- macOS 热键、权限、菜单栏 UI，以及顶部居中的原生声波浮窗；录音声波使用 overlay 内部 `WaveMotionModel` 驱动，当前已回退为 `CAReplicatorLayer` + centerline 的 5 色 × 100 细线版本。
 - 单实例锁，防止多个 App 同时抢热键。
 - 转录/注入/总处理耗时日志。
 - 低风险文本后处理：繁体转简体、中文标点归一化、长中文句末补句号；中英文混合时保留英文单词空格，只清理中文字符之间的空格。
@@ -134,6 +134,7 @@ MVP 需要两类 macOS 权限：
 - [API_REFERENCE](API_REFERENCE.md)：当前源码公开接口表。
 - [CHANGELOG](CHANGELOG.md)：版本历史和 reset 记录。
 - [Overlay UI Brief](docs/overlay-ui-implementation-brief.md)：顶部声波浮窗的实现约束和验收标准。
+- [Waveform Motion Design](docs/waveform-motion-design.md)：当前 overlay 声波动效数据层和 5 色 × 100 细线渲染方案。
 - [Streaming Design](docs/streaming-transcription-design.md)：后续阶段的流式设计，不属于 MVP。
 
 ## 许可证

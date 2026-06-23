@@ -33,19 +33,21 @@
 - 热键匹配支持方向键和纯修饰键组合，当前用户配置已切换为 `shift+cmd`。
 - 中英文混合 normalize 改为保留英文单词空格，仅清理中文字符之间的空格。
 - WebRTC VAD 前新增 0.003 RMS energy gate，低于该值直接判定为静音，减少环境噪声假阳性导致的自动停止失效，并降低轻声输入误判为 no_speech 的风险。
-- 新增顶部居中的原生 AppKit 声波浮窗：录音中显示无背景 5 条错位彩色 Siri-style sine waveform、半透明光带和约 10% 透明度跟随阴影；音量 RMS 映射为视觉音量，动画以 60fps 快起慢落跟随输入；处理中先收缩过渡再显示圆点 loading，成功/错误使用状态色反馈。
+- 新增顶部居中的原生 AppKit 声波浮窗：录音中显示无背景 5 色 × 100 细线 Siri-style sine waveform；每色使用 `CAReplicatorLayer` 生成 99 根指数递减线并叠加 1 条 centerline；overlay 内部 `WaveMotionModel` 将 RMS 映射为基础呼吸幅度 1.0 到最大 1.3 的视觉增强，动画以 60fps 快起慢落跟随输入；处理中先收缩过渡再显示圆点 loading，成功/错误使用状态色反馈。
 - 新增系统提示音反馈：录音开始播放 `Tink`，录音结束进入 processing 播放 `Pop`，均使用 macOS `/System/Library/Sounds`；同名 sound 播放前会 stop/reset 后重播，降低短时间连续触发时被吞的概率。
 - 修复麦克风/录音流启动失败时异常穿透 AppKit 热键回调的问题；session 现在记录日志、进入 ERROR，约 3 秒后自动回到 IDLE，并允许后续热键重试。
 - 修复录音流 `start()` 失败后半初始化 stream 未清理的问题。
 - 调整录音失败恢复策略：录音流启动失败后废弃当前 `AudioRecorder`，下一次热键重试使用新建 recorder，避免旧 recorder 状态污染后续录音。
 - 新增 `docs/overlay-ui-implementation-brief.md`，记录浮窗位置、尺寸、主线程和验收约束。
-- 新增 `tests/test_overlay.py` 覆盖浮窗 geometry、动画上限和 no-op interface。
+- 新增 `docs/waveform-motion-design.md`，记录 overlay 动效数据层设计：声音强弱只影响视觉运动，当前采用 `CAReplicatorLayer` + centerline 的 5 色 × 100 细线方案，不改变音频、VAD、转录或注入模块。
+- 新增 `docs/waveform-ribbon-sparse-mesh-temp.md`，临时记录下一轮 ribbon fill + ridge + sparse mesh + flow speed 方案，尚未实现。
+- 新增 `tests/test_overlay.py` 覆盖浮窗 geometry、动画上限、`WaveMotionModel`、replicator 线数计划和 no-op interface。
 - 新增 `tests/test_recorder.py` 覆盖录音流启动失败清理。
 - 文档同步：补齐 `app.py` Protocol seam 的输入/输出契约，更新架构目录测试列表和 overlay 线程约束。
 
 ### Verified
 
-- `.venv/bin/python -m pytest`：64 passed。
+- `.venv/bin/python -m pytest`：68 passed。
 - 当前用户配置热键已设置为 `shift+cmd`。
 - `.venv/bin/python -m compileall src tests`：通过。
 - `.venv/bin/python -m codexvoice --check`：通过。

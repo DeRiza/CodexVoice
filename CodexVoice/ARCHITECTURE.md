@@ -20,7 +20,7 @@
 
 已验证：
 
-- 单元测试 64 个通过。
+- 单元测试 68 个通过。
 - `python -m codexvoice --check` 通过。
 - 真实热键语音输入 smoke 已由用户确认成功，转文字速度体感较快。
 - 尚未完成多 App、长句、异常路径和打包验收。
@@ -97,6 +97,7 @@ CodexVoice/
     test_vad_rules.py
   docs/
     overlay-ui-implementation-brief.md
+    waveform-motion-design.md
     streaming-transcription-design.md
 ```
 
@@ -233,8 +234,9 @@ macOS UI 层。负责：
 - 菜单栏状态项。
 - 退出菜单。
 - 顶部居中、菜单栏下方的原生 AppKit `NSPanel` 声波浮窗，窗口透明且不显示外层胶囊背景。
-- 录音中显示 5 条错位彩色 Siri-style sine waveform、半透明光带和约 10% 透明度的跟随阴影；音量 RMS 会先映射到视觉音量，动画以 60fps 快起慢落跟随输入；处理中先收缩过渡，再显示不含文字内容的圆点 loading。
+- 录音中显示 5 色 × 100 细线 Siri-style waveform：每色使用 `CAReplicatorLayer` 生成 99 根指数递减线，并叠加 1 条 centerline；overlay 内部 `WaveMotionModel` 把 RMS 映射为 `voice_intensity`，无声时保持基础呼吸幅度 1.0，有声时最多增强到 1.3，动画以 60fps 快起慢落跟随输入；处理中先收缩过渡，再显示不含文字内容的圆点 loading。
 - 录音开始播放系统提示音 `Tink`，录音结束进入 processing 时播放系统提示音 `Pop`；提示音来自 macOS `/System/Library/Sounds`，播放前会重置同名 sound 以提升短时间连续触发可靠性。
+- 声波动效实现说明记录在 `docs/waveform-motion-design.md`；该方案只改变 overlay 视觉层，不改变音频、VAD、转录或注入模块。
 - 状态更新：idle、recording、processing、injecting、error。
 - AppKit 操作必须回到主线程；音频线程只写入 level 值，不直接操作 UI。
 
