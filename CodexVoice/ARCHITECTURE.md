@@ -20,7 +20,7 @@
 
 已验证：
 
-- 单元测试 51 个通过。
+- 单元测试 64 个通过。
 - `python -m codexvoice --check` 通过。
 - 真实热键语音输入 smoke 已由用户确认成功，转文字速度体感较快。
 - 尚未完成多 App、长句、异常路径和打包验收。
@@ -92,6 +92,7 @@ CodexVoice/
     test_injection.py
     test_normalize.py
     test_overlay.py
+    test_recorder.py
     test_runtime_lock.py
     test_vad_rules.py
   docs/
@@ -137,6 +138,8 @@ AudioRecorder 检测到已说话
   -> 返回结构化错误
   -> 日志记录
   -> UI 显示 error
+  -> session 进入 ERROR 并保留约 3 秒
+  -> 3 秒后自动回到 IDLE，避免麦克风恢复后仍卡在错误状态
   -> 不注入空文本或乱码
 ```
 
@@ -181,6 +184,7 @@ MVP 不支持 Fn 键，不支持按住松开模式。
 - 维护内存 buffer。
 - 提供当前音量。
 - 根据 VAD 和时间规则触发停止回调。
+- 输入流启动失败后由 session controller 废弃当前 `AudioRecorder` 实例；下一次录音前使用新建 recorder，回到接近应用初始启动的音频运行时状态。
 
 禁止写临时音频文件。
 
@@ -229,7 +233,8 @@ macOS UI 层。负责：
 - 菜单栏状态项。
 - 退出菜单。
 - 顶部居中、菜单栏下方的原生 AppKit `NSPanel` 声波浮窗，窗口透明且不显示外层胶囊背景。
-- 录音中显示动态声波和约 10% 透明度的跟随阴影；处理中先收缩过渡，再显示不含文字内容的圆点 loading。
+- 录音中显示 5 条错位彩色 Siri-style sine waveform、半透明光带和约 10% 透明度的跟随阴影；音量 RMS 会先映射到视觉音量，动画以 60fps 快起慢落跟随输入；处理中先收缩过渡，再显示不含文字内容的圆点 loading。
+- 录音开始播放系统提示音 `Tink`，录音结束进入 processing 时播放系统提示音 `Pop`；提示音来自 macOS `/System/Library/Sounds`，播放前会重置同名 sound 以提升短时间连续触发可靠性。
 - 状态更新：idle、recording、processing、injecting、error。
 - AppKit 操作必须回到主线程；音频线程只写入 level 值，不直接操作 UI。
 
@@ -273,6 +278,7 @@ ERROR -> IDLE
 - `RECORDING` 时再次触发热键只停止当前 session，不启动新 session。
 - `PROCESSING` 和 `INJECTING` 时忽略新的热键或显示 busy。
 - 空文本不注入。
+- 麦克风、转录或注入异常不应穿透 AppKit 热键回调；controller 记录日志、进入 `ERROR`，约 3 秒后自动回到 `IDLE`，后续热键可重试。
 
 ---
 

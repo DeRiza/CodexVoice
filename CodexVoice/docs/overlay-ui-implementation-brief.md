@@ -46,17 +46,27 @@
 ### `RECORDING`
 
 - 浮窗显示。
-- 中间显示动态声波柱。
+- 中间显示 5 条错位彩色 Siri-style 横向 sine wave。
+- 每条 wave 下方叠加半透明填充 ribbon，并在细线下方叠加同色宽 glow stroke，形成接近参考图的光带感。
 - 声波后方显示一层约 `10%` 透明度、轻微偏移的 shadow wave，shadow 跟随声波动画同步变化。
-- 声波柱跟随 `OverlayController.set_level(level)` 的音量值平滑变化。
+- wave 振幅不直接使用原始 RMS，而是先把常见说话音量区间映射成视觉音量。
+- 动画 tick 使用 60fps；音量上升时快速响应，音量下降时慢速回落，避免抖动但增强实时感。
 - `set_level()` 可能来自音频回调线程，因此不得直接操作 AppKit。
 
 ### `PROCESSING`
 
 - 录音结束后浮窗不立刻消失。
-- 声波先收缩/淡出，再切换为 5 个小圆点 loading。
+- 声波振幅先收缩/淡出，再切换为 5 个小圆点 loading。
 - 小圆点从左到右依次高亮，表示“语音转文字处理中”。
 - 不展示转写文本。
+
+## 系统提示音
+
+- 录音成功开始后播放系统提示音 `Tink`。
+- 录音结束并进入 processing 时播放系统提示音 `Pop`。
+- 声音来源为 macOS `/System/Library/Sounds`，不引入自定义音频文件。
+- 同一提示音会复用缓存的 `NSSound`，每次播放前 stop/reset，避免短时间连续触发时被 token 去重或播放位置吞掉。
+- 提示音是 UI 反馈，不改变录音、转写或注入流程。
 
 ### `INJECTING`
 

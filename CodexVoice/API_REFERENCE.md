@@ -80,9 +80,9 @@
 | 函数/方法 | 签名 | 参数 | 返回值 | 说明 |
 |-----------|------|------|--------|------|
 | `__init__()` | `(config: AppConfig, recorder, transcriber, injector, overlay=None, logger=None) -> None` | 依赖注入对象 | - | 创建 session 控制器 |
-| `toggle()` | `() -> None` | - | - | IDLE/ERROR 时开始录音，RECORDING 时停止处理 |
-| `start_recording()` | `() -> None` | - | - | 开始录音；状态冲突抛 `BusyError` |
-| `stop_and_process()` | `(reason: StopReason = StopReason.MANUAL) -> None` | `reason`: 停止原因 | - | 停止录音、转录、注入 |
+| `toggle()` | `() -> None` | - | - | IDLE/ERROR 时开始录音，RECORDING 时停止处理；可恢复 session 异常会记录日志并进入 ERROR，不向 AppKit 热键回调传播；ERROR 约 3 秒后自动回到 IDLE |
+| `start_recording()` | `() -> None` | - | - | 开始录音；状态冲突抛 `BusyError`；麦克风启动失败时记录日志并进入 ERROR，约 3 秒后自动恢复 IDLE |
+| `stop_and_process()` | `(reason: StopReason = StopReason.MANUAL) -> None` | `reason`: 停止原因 | - | 停止录音、转录、注入；处理失败时记录日志并进入 ERROR，约 3 秒后自动恢复 IDLE |
 | `cancel()` | `() -> None` | - | - | 取消当前 session |
 | `state()` | `() -> SessionState` | - | `SessionState` | 当前状态 |
 
@@ -143,7 +143,7 @@
 | 函数/方法 | 签名 | 参数 | 返回值 | 说明 |
 |-----------|------|------|--------|------|
 | `__init__()` | `(config: RecordingConfig, on_level=None, on_auto_stop=None) -> None` | `on_level(float)`, `on_auto_stop(StopReason)` | - | 初始化录音器 |
-| `start()` | `() -> None` | - | - | 打开 `sounddevice.RawInputStream`；缺依赖抛 `RuntimeError` |
+| `start()` | `() -> None` | - | - | 打开 `sounddevice.RawInputStream`；缺依赖抛 `RuntimeError`；启动失败后由 session controller 替换 recorder，下一次重试使用新 recorder |
 | `stop()` | `() -> AudioBuffer` | - | `AudioBuffer` | 停止并返回内存 PCM |
 | `cancel()` | `() -> None` | - | - | 停止并丢弃音频 |
 | `is_recording()` | `() -> bool` | - | `bool` | 是否录音中 |
@@ -274,7 +274,8 @@
 - `tests/test_injection.py`
 - `tests/test_normalize.py`
 - `tests/test_overlay.py`
+- `tests/test_recorder.py`
 - `tests/test_runtime_lock.py`
 - `tests/test_vad_rules.py`
 
-当前验证：`51 passed`。
+当前验证：`64 passed`。

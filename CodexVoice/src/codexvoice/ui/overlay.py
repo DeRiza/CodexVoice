@@ -1,8 +1,8 @@
 """Native macOS overlay for recording and processing state.
 
 The public controller intentionally stays small: callers only show, hide, set a
-state, and feed audio levels. All AppKit windowing, animation, and thread
-marshalling are hidden inside this module.
+state, and feed audio levels. All AppKit windowing, animation, sound feedback,
+and thread marshalling are hidden inside this module.
 """
 
 from __future__ import annotations
@@ -19,19 +19,47 @@ logger = logging.getLogger(__name__)
 _PANEL_WIDTH = 300.0
 _PANEL_HEIGHT = 72.0
 _TOP_MARGIN = 16.0
-_BAR_COUNT = 16
-_BAR_WIDTH = 6.0
-_BAR_GAP = 5.0
-_BAR_MIN_HEIGHT = 6.0
-_BAR_MAX_HEIGHT = 40.0
+_WAVE_COLORS = (
+    (0.00, 0.92, 1.00, 1.00),
+    (0.18, 0.56, 1.00, 1.00),
+    (0.68, 0.38, 1.00, 1.00),
+    (1.00, 0.34, 0.66, 1.00),
+    (1.00, 0.72, 0.18, 1.00),
+)
+_WAVE_COUNT = len(_WAVE_COLORS)
+_WAVE_SAMPLES = 84
+_WAVE_ACTIVE_WIDTH = 228.0
+_WAVE_BASE_AMPLITUDE = 5.5
+_WAVE_MAX_AMPLITUDE = 31.0
+_WAVE_LINE_WIDTHS = (2.7, 2.2, 1.8, 1.55, 1.3)
+_WAVE_ALPHAS = (0.92, 0.68, 0.58, 0.52, 0.46)
+_WAVE_GLOW_LINE_WIDTHS = (15.0, 13.5, 12.0, 11.0, 10.0)
+_WAVE_GLOW_ALPHAS = (0.22, 0.18, 0.16, 0.15, 0.14)
+_WAVE_FILL_ALPHAS = (0.20, 0.16, 0.15, 0.14, 0.12)
+_WAVE_AMPLITUDE_MULTIPLIERS = (1.00, 0.86, 0.95, 0.80, 0.90)
+_WAVE_FREQUENCIES = (1.25, 1.68, 2.05, 1.52, 2.32)
+_WAVE_SECONDARY_FREQUENCIES = (2.45, 2.95, 3.35, 2.70, 3.85)
+_WAVE_PHASE_SPEEDS = (2.25, 1.75, 2.65, 1.35, 2.95)
+_WAVE_PHASE_OFFSETS = (0.0, 1.7, 3.2, 4.8, 6.4)
+_WAVE_Y_OFFSETS = (0.0, -3.2, 2.6, -1.8, 3.4)
+_WAVE_SECONDARY_MIX = (0.20, 0.28, 0.24, 0.30, 0.22)
+_WAVE_SHADOW_COLORS = tuple((0.0, 0.0, 0.0, 1.0) for _ in range(_WAVE_COUNT))
 _DOT_COUNT = 5
 _DOT_SIZE = 9.0
 _DOT_GAP = 13.0
-_ANIMATION_INTERVAL_SEC = 1.0 / 30.0
+_ANIMATION_INTERVAL_SEC = 1.0 / 60.0
 _SHADOW_OFFSET_X = 2.0
 _SHADOW_OFFSET_Y = -2.0
 _SHADOW_ALPHA = 0.10
 _PROCESSING_TRANSITION_SEC = 0.42
+_START_SOUND = "Tink"
+_STOP_SOUND = "Pop"
+_SOUND_VOLUME = 0.45
+_VISUAL_LEVEL_NOISE_FLOOR = 0.003
+_VISUAL_LEVEL_SPEECH_CEILING = 0.060
+_VISUAL_LEVEL_CURVE = 0.55
+_VISUAL_LEVEL_ATTACK = 0.64
+_VISUAL_LEVEL_RELEASE = 0.24
 
 
 @dataclass(frozen=True)
@@ -55,20 +83,66 @@ def _panel_frame_for_visible_frame(
     return _PanelFrame(x=x, y=y, width=panel_width, height=panel_height)
 
 
-def _waveform_bar_heights(
+def _visual_level_from_audio_level(level: float) -> float:
+    if level <= _VISUAL_LEVEL_NOISE_FLOOR:
+        return 0.0
+    normalized = (level - _VISUAL_LEVEL_NOISE_FLOOR) / (_VISUAL_LEVEL_SPEECH_CEILING - _VISUAL_LEVEL_NOISE_FLOOR)
+    return _clamp(normalized, 0.0, 1.0) ** _VISUAL_LEVEL_CURVE
+
+
+def _waveform_points(
     level: float,
     phase: float,
-    count: int = _BAR_COUNT,
-    min_height: float = _BAR_MIN_HEIGHT,
-    max_height: float = _BAR_MAX_HEIGHT,
-) -> list[float]:
-    clamped = _clamp(level, 0.0, 1.0)
-    heights: list[float] = []
-    for index in range(count):
-        wave = 0.55 + 0.45 * math.sin((phase * 5.0) + index * 0.78)
-        shaped = _clamp((clamped * 1.45 * wave) + 0.06, 0.0, 1.0)
-        heights.append(min_height + (max_height - min_height) * shaped)
-    return heights
+    wave_index: int,
+    collapse: float = 0.0,
+    x_offset: float = 0.0,
+    y_offset: float = 0.0,
+) -> list[tuple[float, float]]:
+    profile_index = wave_index % _WAVE_COUNT
+    clamped_level = _clamp(level, 0.0, 1.0)
+    collapse = _clamp(collapse, 0.0, 1.0)
+    center_y = _PANEL_HEIGHT / 2.0
+    start_x = (_PANEL_WIDTH - _WAVE_ACTIVE_WIDTH) / 2.0
+    shaped_level = clamped_level**0.62
+    amplitude = (
+        (_WAVE_BASE_AMPLITUDE + _WAVE_MAX_AMPLITUDE * shaped_level)
+        * _WAVE_AMPLITUDE_MULTIPLIERS[profile_index]
+        * (1.0 - collapse)
+    )
+    frequency = _WAVE_FREQUENCIES[profile_index]
+    secondary_frequency = _WAVE_SECONDARY_FREQUENCIES[profile_index]
+    phase_speed = _WAVE_PHASE_SPEEDS[profile_index]
+    phase_offset = _WAVE_PHASE_OFFSETS[profile_index]
+    secondary_mix = _WAVE_SECONDARY_MIX[profile_index]
+    vertical_offset = _WAVE_Y_OFFSETS[profile_index] * (1.0 - collapse)
+    points: list[tuple[float, float]] = []
+    for sample in range(_WAVE_SAMPLES):
+        t = sample / (_WAVE_SAMPLES - 1)
+        envelope = math.sin(math.pi * t) ** 0.72
+        primary = math.sin((math.tau * frequency * t) + phase * phase_speed + phase_offset)
+        secondary = math.sin((math.tau * secondary_frequency * t) - phase * (phase_speed * 0.68) + phase_offset * 1.35)
+        shape = (primary * (1.0 - secondary_mix)) + (secondary * secondary_mix)
+        local_breath = 0.90 + 0.10 * math.sin((math.tau * t) + phase_offset)
+        x = start_x + t * _WAVE_ACTIVE_WIDTH + x_offset
+        y = center_y + (shape * amplitude * envelope * local_breath) + (vertical_offset * envelope) + y_offset
+        points.append((x, y))
+    return points
+
+
+def _waveform_ribbon_points(
+    level: float,
+    phase: float,
+    wave_index: int,
+    collapse: float = 0.0,
+    x_offset: float = 0.0,
+    y_offset: float = 0.0,
+) -> list[tuple[float, float]]:
+    wave = _waveform_points(level, phase, wave_index, collapse, x_offset, y_offset)
+    center_y = (_PANEL_HEIGHT / 2.0) + y_offset
+    profile_index = wave_index % _WAVE_COUNT
+    inner_scale = 0.18 + (profile_index * 0.035)
+    inner_edge = [(x, center_y + ((y - center_y) * inner_scale)) for x, y in reversed(wave)]
+    return [*wave, *inner_edge, wave[0]]
 
 
 def _processing_dot_alphas(phase: float, count: int = _DOT_COUNT) -> list[float]:
@@ -87,20 +161,23 @@ class OverlayController:
         self._native_failed = False
         self._window = None
         self._container = None
-        self._bar_shadow_views: list[object] = []
-        self._bar_views: list[object] = []
+        self._wave_shadow_layers: list[object] = []
+        self._wave_fill_layers: list[object] = []
+        self._wave_glow_layers: list[object] = []
+        self._wave_layers: list[object] = []
         self._dot_shadow_views: list[object] = []
         self._dot_views: list[object] = []
         self._animation_running = False
         self._phase = 0.0
         self._processing_transition = 1.0
+        self._sound_cache: dict[str, object] = {}
 
     def show(self, state: SessionState) -> None:
         with self._lock:
             self.visible = self.enabled
             self.current_state = state
         if self.enabled:
-            self._dispatch_ui(lambda: self._show_native(state))
+            self._dispatch_ui(lambda: self._show_native(state, play_start_sound=state is SessionState.RECORDING))
 
     def hide(self) -> None:
         with self._lock:
@@ -109,11 +186,13 @@ class OverlayController:
         logger.debug("overlay hidden")
 
     def set_state(self, state: SessionState) -> None:
+        play_stop_sound = False
         with self._lock:
             previous = self.current_state
             self.current_state = state
             if previous is SessionState.RECORDING and state is SessionState.PROCESSING:
                 self._processing_transition = 0.0
+                play_stop_sound = True
             elif state is not SessionState.PROCESSING:
                 self._processing_transition = 1.0
             should_show = self.enabled and state is not SessionState.IDLE
@@ -125,7 +204,7 @@ class OverlayController:
         if state is SessionState.IDLE:
             self._dispatch_ui(self._hide_native)
             return
-        self._dispatch_ui(lambda: self._show_native(state))
+        self._dispatch_ui(lambda: self._show_native(state, play_stop_sound=play_stop_sound))
 
     def set_level(self, level: float) -> None:
         with self._lock:
@@ -142,12 +221,16 @@ class OverlayController:
             return
         AppHelper.callAfter(callback)
 
-    def _show_native(self, state: SessionState) -> None:
+    def _show_native(self, state: SessionState, play_start_sound: bool = False, play_stop_sound: bool = False) -> None:
         if not self._ensure_native():
             return
         self._apply_state_style(state)
         if self._window is not None:
             self._window.orderFrontRegardless()
+        if play_start_sound:
+            self._play_system_sound(_START_SOUND, token="recording-start")
+        if play_stop_sound:
+            self._play_system_sound(_STOP_SOUND, token="recording-stop")
         self._start_animation()
 
     def _hide_native(self) -> None:
@@ -174,9 +257,10 @@ class OverlayController:
                 NSWindowCollectionBehaviorTransient,
                 NSWindowStyleMaskBorderless,
             )
+            from Quartz import CAShapeLayer, kCALineCapRound  # type: ignore
         except Exception:
             self._native_failed = True
-            logger.debug("PyObjC AppKit unavailable; overlay disabled", exc_info=True)
+            logger.debug("PyObjC AppKit/Quartz unavailable; overlay disabled", exc_info=True)
             return False
 
         screen = NSScreen.mainScreen()
@@ -214,36 +298,68 @@ class OverlayController:
         container = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, frame.width, frame.height))
         container.setWantsLayer_(True)
         layer = container.layer()
-        if layer is not None:
-            layer.setMasksToBounds_(False)
-            layer.setBackgroundColor_(_cg_color(0.0, 0.0, 0.0, 0.0))
+        if layer is None:
+            self._native_failed = True
+            logger.debug("Overlay container layer unavailable; overlay disabled")
+            return False
+        layer.setMasksToBounds_(False)
+        layer.setBackgroundColor_(_cg_color(0.0, 0.0, 0.0, 0.0))
 
         panel.setContentView_(container)
         self._window = panel
         self._container = container
-        self._bar_shadow_views = self._make_bar_views(NSView, NSMakeRect, color=(0.0, 0.0, 0.0, _SHADOW_ALPHA))
-        self._bar_views = self._make_bar_views(NSView, NSMakeRect, color=(0.35, 0.78, 1.0, 0.95))
+        self._wave_shadow_layers = self._make_wave_layers(CAShapeLayer, kCALineCapRound, colors=_WAVE_SHADOW_COLORS, line_width_extra=0.6)
+        self._wave_fill_layers = self._make_wave_fill_layers(CAShapeLayer, colors=_WAVE_COLORS)
+        self._wave_glow_layers = self._make_wave_layers(
+            CAShapeLayer,
+            kCALineCapRound,
+            colors=_WAVE_COLORS,
+            line_width_extra=0.0,
+            line_widths=_WAVE_GLOW_LINE_WIDTHS,
+        )
+        self._wave_layers = self._make_wave_layers(CAShapeLayer, kCALineCapRound, colors=_WAVE_COLORS, line_width_extra=0.0)
         self._dot_shadow_views = self._make_dot_views(NSView, NSMakeRect, color=(0.0, 0.0, 0.0, _SHADOW_ALPHA))
         self._dot_views = self._make_dot_views(NSView, NSMakeRect, color=(0.78, 0.72, 1.0, 0.95))
         return True
 
-    def _make_bar_views(self, NSView, NSMakeRect, color: tuple[float, float, float, float]) -> list[object]:  # noqa: ANN001, N803
+    def _make_wave_layers(
+        self,
+        CAShapeLayer,
+        line_cap,
+        colors: tuple[tuple[float, float, float, float], ...],
+        line_width_extra: float,
+        line_widths: tuple[float, ...] = _WAVE_LINE_WIDTHS,
+    ) -> list[object]:  # noqa: ANN001, N803
         assert self._container is not None
-        views = []
-        total_width = _BAR_COUNT * _BAR_WIDTH + (_BAR_COUNT - 1) * _BAR_GAP
-        start_x = (_PANEL_WIDTH - total_width) / 2.0
-        for index in range(_BAR_COUNT):
-            view = NSView.alloc().initWithFrame_(
-                NSMakeRect(start_x + index * (_BAR_WIDTH + _BAR_GAP), (_PANEL_HEIGHT - _BAR_MIN_HEIGHT) / 2.0, _BAR_WIDTH, _BAR_MIN_HEIGHT)
-            )
-            view.setWantsLayer_(True)
-            layer = view.layer()
-            if layer is not None:
-                layer.setCornerRadius_(_BAR_WIDTH / 2.0)
-                layer.setBackgroundColor_(_cg_color(*color))
-            self._container.addSubview_(view)
-            views.append(view)
-        return views
+        container_layer = self._container.layer()
+        layers = []
+        for index in range(_WAVE_COUNT):
+            layer = CAShapeLayer.layer()
+            layer.setFillColor_(_cg_color(0.0, 0.0, 0.0, 0.0))
+            layer.setStrokeColor_(_cg_color(*colors[index]))
+            layer.setLineWidth_(line_widths[index] + line_width_extra)
+            layer.setLineCap_(line_cap)
+            layer.setHidden_(True)
+            container_layer.addSublayer_(layer)
+            layers.append(layer)
+        return layers
+
+    def _make_wave_fill_layers(
+        self,
+        CAShapeLayer,
+        colors: tuple[tuple[float, float, float, float], ...],
+    ) -> list[object]:  # noqa: ANN001, N803
+        assert self._container is not None
+        container_layer = self._container.layer()
+        layers = []
+        for index in range(_WAVE_COUNT):
+            layer = CAShapeLayer.layer()
+            layer.setFillColor_(_cg_color(*colors[index]))
+            layer.setStrokeColor_(_cg_color(0.0, 0.0, 0.0, 0.0))
+            layer.setHidden_(True)
+            container_layer.addSublayer_(layer)
+            layers.append(layer)
+        return layers
 
     def _make_dot_views(self, NSView, NSMakeRect, color: tuple[float, float, float, float]) -> list[object]:  # noqa: ANN001, N803
         assert self._container is not None
@@ -288,20 +404,23 @@ class OverlayController:
             visible = self.visible
             if state is SessionState.PROCESSING and self._processing_transition < 1.0:
                 self._processing_transition = min(1.0, self._processing_transition + (_ANIMATION_INTERVAL_SEC / _PROCESSING_TRANSITION_SEC))
+            transition = self._processing_transition
         if not visible or state is SessionState.IDLE:
             self._animation_running = False
             return
         self._phase += _ANIMATION_INTERVAL_SEC
-        self._smoothed_level = (self._smoothed_level * 0.78) + (level * 0.22)
-        self._render_state(state)
+        target_level = _visual_level_from_audio_level(level)
+        response = _VISUAL_LEVEL_ATTACK if target_level > self._smoothed_level else _VISUAL_LEVEL_RELEASE
+        self._smoothed_level = (self._smoothed_level * (1.0 - response)) + (target_level * response)
+        self._render_state(state, transition)
         self._schedule_tick()
 
-    def _render_state(self, state: SessionState) -> None:
+    def _render_state(self, state: SessionState, transition: float) -> None:
         if state is SessionState.RECORDING:
-            self._render_waveform()
+            self._render_waveform(collapse=0.0, alpha_scale=1.0)
             return
         if state is SessionState.PROCESSING:
-            self._render_processing()
+            self._render_processing(transition)
             return
         if state is SessionState.INJECTING:
             self._render_static_dots((0.32, 0.95, 0.70, 0.95), alpha=0.88)
@@ -309,49 +428,34 @@ class OverlayController:
         if state is SessionState.ERROR:
             self._render_static_dots((1.0, 0.28, 0.34, 0.95), alpha=0.95)
 
-    def _render_waveform(self) -> None:
-        if self._window is None:
-            return
-        heights = _waveform_bar_heights(self._smoothed_level, self._phase)
-        self._render_bar_group(self._bar_shadow_views, heights, alpha=_SHADOW_ALPHA, x_offset=_SHADOW_OFFSET_X, y_offset=_SHADOW_OFFSET_Y)
-        self._render_bar_group(self._bar_views, heights, alpha=1.0, x_offset=0.0, y_offset=0.0)
+    def _render_waveform(self, collapse: float, alpha_scale: float) -> None:
+        for index, layer in enumerate(self._wave_shadow_layers):
+            layer.setHidden_(False)
+            layer.setOpacity_(_WAVE_ALPHAS[index] * _SHADOW_ALPHA * alpha_scale)
+            layer.setPath_(_cg_path_from_points(_waveform_points(self._smoothed_level, self._phase, index, collapse, _SHADOW_OFFSET_X, _SHADOW_OFFSET_Y)))
+        for index, layer in enumerate(self._wave_fill_layers):
+            layer.setHidden_(False)
+            layer.setOpacity_(_WAVE_FILL_ALPHAS[index] * alpha_scale)
+            layer.setPath_(_cg_path_from_points(_waveform_ribbon_points(self._smoothed_level, self._phase, index, collapse)))
+        for index, layer in enumerate(self._wave_glow_layers):
+            layer.setHidden_(False)
+            layer.setOpacity_(_WAVE_GLOW_ALPHAS[index] * alpha_scale)
+            layer.setPath_(_cg_path_from_points(_waveform_points(self._smoothed_level, self._phase, index, collapse)))
+        for index, layer in enumerate(self._wave_layers):
+            layer.setHidden_(False)
+            layer.setOpacity_(_WAVE_ALPHAS[index] * alpha_scale)
+            layer.setPath_(_cg_path_from_points(_waveform_points(self._smoothed_level, self._phase, index, collapse)))
         self._hide_dots()
 
-    def _render_bar_group(
-        self,
-        views: list[object],
-        heights: list[float],
-        alpha: float,
-        x_offset: float,
-        y_offset: float,
-        shrink: float = 0.0,
-    ) -> None:
-        NSMakeRect = _ns_make_rect()
-        total_width = _BAR_COUNT * _BAR_WIDTH + (_BAR_COUNT - 1) * _BAR_GAP
-        start_x = (_PANEL_WIDTH - total_width) / 2.0
-        target_x = (_PANEL_WIDTH - _BAR_WIDTH) / 2.0
-        for index, view in enumerate(views):
-            original_x = start_x + index * (_BAR_WIDTH + _BAR_GAP)
-            x = original_x + (target_x - original_x) * shrink
-            height = heights[index] + (_DOT_SIZE - heights[index]) * shrink
-            view.setHidden_(False)
-            view.setAlphaValue_(alpha * (1.0 - shrink))
-            view.setFrame_(NSMakeRect(x + x_offset, ((_PANEL_HEIGHT - height) / 2.0) + y_offset, _BAR_WIDTH, height))
-
-    def _render_processing(self) -> None:
-        if self._processing_transition < 1.0:
-            self._render_processing_transition(self._processing_transition)
+    def _render_processing(self, transition: float) -> None:
+        if transition < 1.0:
+            self._render_waveform(collapse=transition, alpha_scale=1.0 - transition)
+            alphas = [value * transition for value in _processing_dot_alphas(self._phase)]
+            self._render_dot_group(self._dot_shadow_views, alphas, alpha_scale=_SHADOW_ALPHA, x_offset=_SHADOW_OFFSET_X, y_offset=_SHADOW_OFFSET_Y)
+            self._render_dot_group(self._dot_views, alphas, alpha_scale=1.0, x_offset=0.0, y_offset=0.0)
             return
-        self._hide_bars()
+        self._hide_wave_layers()
         alphas = _processing_dot_alphas(self._phase)
-        self._render_dot_group(self._dot_shadow_views, alphas, alpha_scale=_SHADOW_ALPHA, x_offset=_SHADOW_OFFSET_X, y_offset=_SHADOW_OFFSET_Y)
-        self._render_dot_group(self._dot_views, alphas, alpha_scale=1.0, x_offset=0.0, y_offset=0.0)
-
-    def _render_processing_transition(self, progress: float) -> None:
-        heights = _waveform_bar_heights(self._smoothed_level, self._phase)
-        self._render_bar_group(self._bar_shadow_views, heights, alpha=_SHADOW_ALPHA, x_offset=_SHADOW_OFFSET_X, y_offset=_SHADOW_OFFSET_Y, shrink=progress)
-        self._render_bar_group(self._bar_views, heights, alpha=1.0, x_offset=0.0, y_offset=0.0, shrink=progress)
-        alphas = [value * progress for value in _processing_dot_alphas(self._phase)]
         self._render_dot_group(self._dot_shadow_views, alphas, alpha_scale=_SHADOW_ALPHA, x_offset=_SHADOW_OFFSET_X, y_offset=_SHADOW_OFFSET_Y)
         self._render_dot_group(self._dot_views, alphas, alpha_scale=1.0, x_offset=0.0, y_offset=0.0)
 
@@ -365,7 +469,7 @@ class OverlayController:
             view.setFrame_(NSMakeRect(start_x + index * (_DOT_SIZE + _DOT_GAP) + x_offset, ((_PANEL_HEIGHT - _DOT_SIZE) / 2.0) + y_offset, _DOT_SIZE, _DOT_SIZE))
 
     def _render_static_dots(self, color: tuple[float, float, float, float], alpha: float) -> None:
-        self._hide_bars()
+        self._hide_wave_layers()
         for view in self._dot_shadow_views:
             view.setHidden_(False)
             view.setAlphaValue_(_SHADOW_ALPHA)
@@ -376,9 +480,9 @@ class OverlayController:
             if layer is not None:
                 layer.setBackgroundColor_(_cg_color(*color))
 
-    def _hide_bars(self) -> None:
-        for view in [*self._bar_shadow_views, *self._bar_views]:
-            view.setHidden_(True)
+    def _hide_wave_layers(self) -> None:
+        for layer in [*self._wave_shadow_layers, *self._wave_fill_layers, *self._wave_glow_layers, *self._wave_layers]:
+            layer.setHidden_(True)
 
     def _hide_dots(self) -> None:
         for view in [*self._dot_shadow_views, *self._dot_views]:
@@ -388,9 +492,36 @@ class OverlayController:
         if self._container is None:
             return
         layer = self._container.layer()
-        if layer is None:
+        if layer is not None:
+            layer.setBackgroundColor_(_cg_color(0.0, 0.0, 0.0, 0.0))
+
+    def _play_system_sound(self, name: str, token: str | None = None) -> None:
+        del token
+        try:
+            from AppKit import NSSound  # type: ignore
+        except Exception:
+            logger.debug("NSSound unavailable; skipping system sound %s", name, exc_info=True)
             return
-        layer.setBackgroundColor_(_cg_color(0.0, 0.0, 0.0, 0.0))
+        sound = self._sound_cache.get(name)
+        if sound is None:
+            sound = NSSound.soundNamed_(name)
+            if sound is None:
+                logger.debug("System sound not found: %s", name)
+                return
+            self._sound_cache[name] = sound
+        try:
+            sound.setVolume_(_SOUND_VOLUME)
+            stop = getattr(sound, "stop", None)
+            if callable(stop):
+                stop()
+            set_current_time = getattr(sound, "setCurrentTime_", None)
+            if callable(set_current_time):
+                set_current_time(0.0)
+            played = sound.play()
+            if played is False:
+                logger.debug("System sound did not start: %s", name)
+        except Exception:
+            logger.debug("System sound playback failed: %s", name, exc_info=True)
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -401,6 +532,19 @@ def _cg_color(red: float, green: float, blue: float, alpha: float):
     from Quartz import CGColorCreateGenericRGB  # type: ignore
 
     return CGColorCreateGenericRGB(red, green, blue, alpha)
+
+
+def _cg_path_from_points(points: list[tuple[float, float]]):
+    from Quartz import CGPathAddLineToPoint, CGPathCreateMutable, CGPathMoveToPoint  # type: ignore
+
+    path = CGPathCreateMutable()
+    if not points:
+        return path
+    first_x, first_y = points[0]
+    CGPathMoveToPoint(path, None, first_x, first_y)
+    for x, y in points[1:]:
+        CGPathAddLineToPoint(path, None, x, y)
+    return path
 
 
 def _ns_make_rect():

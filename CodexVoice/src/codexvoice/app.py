@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -13,6 +13,8 @@ from .config import AppConfig, default_user_config_path, load_config, save_confi
 from .logging_setup import setup_logging
 from .runtime_lock import SingleInstanceLock
 from .types import AudioBuffer, InjectionResult, SessionState, StopReason, Transcript
+
+_ERROR_RECOVERY_DELAY_SEC = 3.0
 
 
 class BusyError(RuntimeError):
@@ -64,6 +66,7 @@ class VoiceSessionController:
         injector: InjectorProtocol,
         overlay: OverlayProtocol | None = None,
         logger: logging.Logger | None = None,
+        recorder_factory: Callable[[], RecorderProtocol] | None = None,
     ) -> None:
         self.config = config
         self.recorder = recorder
@@ -71,8 +74,10 @@ class VoiceSessionController:
         self.injector = injector
         self.overlay = overlay or NullOverlay()
         self.logger = logger or logging.getLogger("codexvoice")
+        self._recorder_factory = recorder_factory
         self._state = SessionState.IDLE
         self._lock = threading.RLock()
+        self._error_recovery_timer: threading.Timer | None = None
 
     def toggle(self) -> None:
         current = self.state()
@@ -96,8 +101,9 @@ class VoiceSessionController:
         except Exception:
             self.logger.exception("Failed to start recording")
             with self._lock:
+                self._replace_recorder_after_start_failure()
                 self._set_state(SessionState.ERROR)
-            raise
+            return
 
     def stop_and_process(self, reason: StopReason = StopReason.MANUAL) -> None:
         with self._lock:
@@ -157,7 +163,7 @@ class VoiceSessionController:
             self.logger.exception("Failed to process voice session")
             with self._lock:
                 self._set_state(SessionState.ERROR)
-            raise
+            return
 
     def cancel(self) -> None:
         with self._lock:
@@ -178,7 +184,42 @@ class VoiceSessionController:
 
     def _set_state(self, state: SessionState) -> None:
         self._state = state
+        if state is SessionState.ERROR:
+            self._schedule_error_recovery()
+        else:
+            self._cancel_error_recovery()
         self.overlay.set_state(state)
+
+    def _schedule_error_recovery(self) -> None:
+        self._cancel_error_recovery()
+        timer = threading.Timer(_ERROR_RECOVERY_DELAY_SEC, self._recover_from_error)
+        timer.daemon = True
+        self._error_recovery_timer = timer
+        timer.start()
+
+    def _cancel_error_recovery(self) -> None:
+        timer = self._error_recovery_timer
+        self._error_recovery_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _recover_from_error(self) -> None:
+        with self._lock:
+            if self._state is not SessionState.ERROR:
+                return
+            self._error_recovery_timer = None
+            self.logger.info("Recovering from error state after %.1fs", _ERROR_RECOVERY_DELAY_SEC)
+            self._set_state(SessionState.IDLE)
+
+    def _replace_recorder_after_start_failure(self) -> None:
+        if self._recorder_factory is None:
+            return
+        try:
+            self.recorder.cancel()
+        except Exception:
+            self.logger.debug("Failed to cancel recorder while resetting after start failure", exc_info=True)
+        self.recorder = self._recorder_factory()
+        self.logger.info("Audio recorder reset after start failure")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -270,10 +311,13 @@ def _run_macos_app(config: AppConfig, logger: logging.Logger) -> None:
         if controller is not None:
             controller.stop_and_process(reason)
 
-    recorder = AudioRecorder(config.recording, on_level=overlay.set_level, on_auto_stop=on_auto_stop)
+    def make_recorder() -> AudioRecorder:
+        return AudioRecorder(config.recording, on_level=overlay.set_level, on_auto_stop=on_auto_stop)
+
+    recorder = make_recorder()
     transcriber = create_transcriber(config.transcription)
     injector = ClipboardInjector(config.injection, logger=logger)
-    controller = VoiceSessionController(config, recorder, transcriber, injector, overlay, logger)
+    controller = VoiceSessionController(config, recorder, transcriber, injector, overlay, logger, recorder_factory=make_recorder)
     controller_box["controller"] = controller
 
     hotkey = HotkeyManager(config.hotkey, controller.toggle)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -10,6 +11,8 @@ from codexvoice.config import RecordingConfig
 from codexvoice.types import AudioBuffer, StopReason
 
 from .vad import StopRuleTracker, is_speech_frame, rms_level
+
+logger = logging.getLogger(__name__)
 
 
 class AudioRecorder:
@@ -41,14 +44,26 @@ class AudioRecorder:
             self._auto_stop_sent = False
             self._tracker.reset(time.monotonic())
             blocksize = int(self.config.sample_rate * self.config.frame_ms / 1000)
-            self._stream = sd.RawInputStream(
-                samplerate=self.config.sample_rate,
-                channels=self.config.channels,
-                dtype="int16",
-                blocksize=blocksize,
-                callback=self._on_audio,
-            )
-            self._stream.start()
+            stream = None
+            try:
+                stream = sd.RawInputStream(
+                    samplerate=self.config.sample_rate,
+                    channels=self.config.channels,
+                    dtype="int16",
+                    blocksize=blocksize,
+                    callback=self._on_audio,
+                )
+                stream.start()
+            except Exception:
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        logger.debug("Failed to close audio stream after start failure", exc_info=True)
+                self._stream = None
+                self._recording = False
+                raise
+            self._stream = stream
             self._recording = True
 
     def stop(self) -> AudioBuffer:
