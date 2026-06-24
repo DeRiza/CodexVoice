@@ -143,7 +143,7 @@
 | 函数/方法 | 签名 | 参数 | 返回值 | 说明 |
 |-----------|------|------|--------|------|
 | `__init__()` | `(config: RecordingConfig, on_level=None, on_auto_stop=None) -> None` | `on_level(float)`, `on_auto_stop(StopReason)` | - | 初始化录音器 |
-| `start()` | `() -> None` | - | - | 打开 `sounddevice.RawInputStream`；缺依赖抛 `RuntimeError`；启动失败后由 session controller 替换 recorder，下一次重试使用新 recorder |
+| `start()` | `() -> None` | - | - | 打开 `sounddevice.RawInputStream`；缺依赖抛 `RuntimeError`；无可用麦克风抛 `AudioDeviceError`；每次启动会重新枚举输入设备，优先默认输入，默认输入不可用或打开失败时尝试其他可用输入；启动失败后清理半初始化 stream，并 best-effort 重新初始化 sounddevice/PortAudio 设备状态；session controller 会替换 recorder，下一次重试使用新 recorder |
 | `stop()` | `() -> AudioBuffer` | - | `AudioBuffer` | 停止并返回内存 PCM |
 | `cancel()` | `() -> None` | - | - | 停止并丢弃音频 |
 | `is_recording()` | `() -> bool` | - | `bool` | 是否录音中 |
@@ -278,4 +278,4 @@
 - `tests/test_runtime_lock.py`
 - `tests/test_vad_rules.py`
 
-当前验证：`68 passed`。
+当前验证：`70 passed`。

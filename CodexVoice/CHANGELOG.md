@@ -38,6 +38,8 @@
 - 修复麦克风/录音流启动失败时异常穿透 AppKit 热键回调的问题；session 现在记录日志、进入 ERROR，约 3 秒后自动回到 IDLE，并允许后续热键重试。
 - 修复录音流 `start()` 失败后半初始化 stream 未清理的问题。
 - 调整录音失败恢复策略：录音流启动失败后废弃当前 `AudioRecorder`，下一次热键重试使用新建 recorder，避免旧 recorder 状态污染后续录音。
+- 修复默认输入设备断开后 PortAudio 设备状态可能持续 stale 的问题：录音流启动失败后会 best-effort 调用 sounddevice `_terminate()` / `_initialize()` 并查询设备列表，让后续插入新麦克风后的重试能看到新设备。
+- 修复无可用麦克风报错后持续失败的问题：每次开始录音都会重新枚举输入设备，优先默认输入；默认输入 stale 或打开失败时，显式尝试其他可用输入设备。
 - 新增 `docs/overlay-ui-implementation-brief.md`，记录浮窗位置、尺寸、主线程和验收约束。
 - 新增 `docs/waveform-motion-design.md`，记录 overlay 动效数据层设计：声音强弱只影响视觉运动，当前采用 `CAReplicatorLayer` + centerline 的 5 色 × 100 细线方案，不改变音频、VAD、转录或注入模块。
 - 新增 `docs/waveform-ribbon-sparse-mesh-temp.md`，临时记录下一轮 ribbon fill + ridge + sparse mesh + flow speed 方案，尚未实现。
@@ -47,7 +49,7 @@
 
 ### Verified
 
-- `.venv/bin/python -m pytest`：68 passed。
+- `.venv/bin/python -m pytest`：70 passed。
 - 当前用户配置热键已设置为 `shift+cmd`。
 - `.venv/bin/python -m compileall src tests`：通过。
 - `.venv/bin/python -m codexvoice --check`：通过。
